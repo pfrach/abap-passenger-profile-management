@@ -1,0 +1,354 @@
+*&---------------------------------------------------------------------*
+*& Report Z_PASSENGER_PROFILE_MGMT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT z_passenger_profile_mgmt.
+
+
+DATA: lv_passnr        TYPE zzz_pass_tab-zid_pass,
+      lv_password      TYPE zzz_pass_tab-z_password,
+      g_password       TYPE zzz_pass_tab-z_password,
+      g_pass_id        TYPE zzz_pass_tab-zid_pass,
+      gs_passenger     TYPE zzz_pass_tab,
+      gt_res           TYPE TABLE OF zzz_reservations,
+      lt_fcat          TYPE lvc_t_fcat,
+      go_container     TYPE REF TO cl_gui_custom_container,
+      go_grid          TYPE REF TO cl_gui_alv_grid.
+
+CLASS lcl_event_handler DEFINITION.
+  PUBLIC SECTION.
+    METHODS:
+      handle_toolbar FOR EVENT toolbar OF cl_gui_alv_grid
+        IMPORTING e_object e_interactive,
+      handle_user_command FOR EVENT user_command OF cl_gui_alv_grid
+        IMPORTING e_ucomm.
+ENDCLASS.
+
+CLASS lcl_event_handler IMPLEMENTATION.
+
+  METHOD handle_toolbar.
+    DATA: ls_button TYPE stb_button.
+
+    CLEAR ls_button.
+    ls_button-function = 'CANCEL_RES'.
+    ls_button-icon = icon_delete_row.
+    ls_button-quickinfo = 'Anuluj rezerwację'.
+    ls_button-text = 'Anuluj rezerwację'.
+    ls_button-disabled = abap_false.
+    APPEND ls_button TO e_object->mt_toolbar.
+  ENDMETHOD.
+
+  METHOD handle_user_command.
+    DATA: lt_rows   TYPE lvc_t_row,
+          ls_row    TYPE lvc_s_row,
+          ls_res    TYPE zzz_reservations,
+          lv_answer TYPE c LENGTH 1.
+
+    CALL METHOD go_grid->get_selected_rows
+      IMPORTING
+        et_index_rows = lt_rows.
+
+    IF lt_rows IS INITIAL.
+      MESSAGE 'Zaznacz rezerwację do anulowania.' TYPE 'S' DISPLAY LIKE 'E'.
+      RETURN.
+    ENDIF.
+
+    READ TABLE lt_rows INTO ls_row INDEX 1.
+    IF sy-subrc = 0.
+      READ TABLE gt_res INTO ls_res INDEX ls_row-index.
+      IF sy-subrc = 0.
+
+
+        CALL FUNCTION 'POPUP_TO_CONFIRM'
+          EXPORTING
+            titlebar         = 'Potwierdzenie'
+            text_question    = 'Czy na pewno anulować rezerwację?'
+            default_button   = '2'
+            display_cancel_button = 'X'
+          IMPORTING
+            answer           = lv_answer.
+
+        IF lv_answer = '1'. " TAK
+
+          DELETE FROM zzz_reservations WHERE zid_pass = ls_res-zid_pass.
+
+          IF sy-subrc = 0.
+            MESSAGE 'Rezerwacja anulowana.' TYPE 'S'.
+            DELETE gt_res INDEX ls_row-index.
+            CALL METHOD go_grid->refresh_table_display.
+          ELSE.
+            MESSAGE 'Błąd przy anulowaniu.' TYPE 'S' DISPLAY LIKE 'E'.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+
+ENDCLASS.
+
+DATA: go_event_handler TYPE REF TO lcl_event_handler.
+
+START-OF-SELECTION.
+
+  CALL SCREEN 0100.
+
+
+*&---------------------------------------------------------------------*
+*& Module STATUS_0100 OUTPUT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+MODULE status_0100 OUTPUT.
+  SET PF-STATUS 'Z_LOGIN'.
+  SET TITLEBAR 'Z_ZALOGUJ'.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0100  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE user_command_0100 INPUT.
+
+
+  CASE sy-ucomm.
+
+    WHEN 'BACK'.
+      SET SCREEN 0.
+
+    WHEN 'EXECUTE'.
+
+
+
+      SELECT SINGLE *
+          INTO @gs_passenger
+         FROM zzz_pass_tab
+        WHERE zid_pass = @g_pass_id.
+
+
+      IF sy-subrc <> 0.
+        MESSAGE 'Podany numer pasażera nie istnieje' TYPE 'S' DISPLAY LIKE 'E'.
+
+      ELSEIF gs_passenger-z_password <> g_password.
+        MESSAGE 'Nieprawidłowe hasło' TYPE 'S' DISPLAY LIKE 'E'.
+
+      ELSE.
+
+        SET SCREEN 0200.
+        LEAVE SCREEN.
+      ENDIF.
+
+  ENDCASE.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*& Module STATUS_0200 OUTPUT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+MODULE status_0200 OUTPUT.
+  SET PF-STATUS 'Z_DANE_PASAZERA'.
+  SET TITLEBAR 'Z_DANE_PAS'.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0200  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE user_command_0200 INPUT.
+
+
+
+  DATA: lv_count  TYPE i,
+        lv_count2 TYPE i.
+
+  CASE sy-ucomm.
+
+    WHEN 'BACK'.
+      SET SCREEN 0100.
+
+    WHEN 'SAVE'.
+
+*       TRY.
+      " 1. Walidacja e-maila
+      IF gs_passenger-z_email_add NS '@'.
+        CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+          EXPORTING
+            titel     = 'Błąd walidacji'
+            textline1 = 'Nieprawidłowy adres e-mail. Zmiany nie zostały zapisane.'.
+        RETURN.
+        RETURN.
+      ENDIF.
+
+      " 2. Walidacja dokumentu w zależności od typu
+      IF gs_passenger-z_doc_type = 'ID CARD'.
+        FIND REGEX '^[A-Za-z]{3}[0-9]{6}$'
+          IN gs_passenger-z_doc_nr
+          MATCH COUNT lv_count.
+        IF lv_count = 0.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              titel     = 'Błąd walidacji'
+              textline1 = 'Nieprawidłowy numer dowodu. Zmiany nie zostały zapisane.'.
+          RETURN.
+          RETURN.
+        ENDIF.
+
+      ELSEIF gs_passenger-z_doc_type = 'PASSPORT'.
+        FIND REGEX '^[A-Za-z]{2}[0-9]{7}$'
+          IN gs_passenger-z_doc_nr
+          MATCH COUNT lv_count2.
+        IF lv_count2 = 0.
+          CALL FUNCTION 'POPUP_TO_DISPLAY_TEXT'
+            EXPORTING
+              titel     = 'Błąd walidacji'
+              textline1 = 'Nieprawidłowy numer paszportu. Zmiany nie zostały zapisane.'.
+          RETURN.
+          RETURN.
+        ENDIF.
+      ENDIF.
+
+      UPDATE zzz_pass_tab SET
+        z_fir_name     = @gs_passenger-z_fir_name,
+        z_sur_name = @gs_passenger-z_sur_name,
+        z_doc_type    = @gs_passenger-z_doc_type,
+        z_doc_nr   = @gs_passenger-z_doc_nr,
+        z_tel_nr   = @gs_passenger-z_tel_nr,
+        z_email_add  = @gs_passenger-z_email_add,
+        z_password   = @gs_passenger-z_password
+
+      WHERE zid_pass = @gs_passenger-zid_pass.
+
+      IF sy-subrc = 0.
+        MESSAGE 'Dane zostały zapisane' TYPE 'S'.
+      ELSE.
+        MESSAGE 'Błąd przy zapisie danych' TYPE 'S' DISPLAY LIKE 'E'.
+      ENDIF.
+
+*              CATCH zcl_ex_passenger INTO DATA(e1).
+*          MESSAGE 'Nieprawidłowy adres e-mail.' TYPE 'E'.
+*
+*        CATCH zcl_invalid_document INTO DATA(e2).
+*          MESSAGE 'Nieprawidłowy numer dokumentu.' TYPE 'E'.
+
+*      ENDTRY.
+
+
+
+  ENDCASE.
+
+
+ENDMODULE.
+
+*&SPWIZARD: FUNCTION CODES FOR TABSTRIP 'Z_DANE_PASS'
+CONSTANTS: BEGIN OF c_z_dane_pass,
+             tab1 LIKE sy-ucomm VALUE 'Z_DANE_PASS_FC1',
+             tab2 LIKE sy-ucomm VALUE 'Z_DANE_PASS_FC2',
+           END OF c_z_dane_pass.
+*&SPWIZARD: DATA FOR TABSTRIP 'Z_DANE_PASS'
+CONTROLS:  z_dane_pass TYPE TABSTRIP.
+DATA: BEGIN OF g_z_dane_pass,
+        subscreen   LIKE sy-dynnr,
+        prog        LIKE sy-repid VALUE 'Z_PASS_CHANGE',
+        pressed_tab LIKE sy-ucomm VALUE c_z_dane_pass-tab1,
+      END OF g_z_dane_pass.
+DATA:      ok_code LIKE sy-ucomm.
+
+*&SPWIZARD: OUTPUT MODULE FOR TS 'Z_DANE_PASS'. DO NOT CHANGE THIS LINE!
+*&SPWIZARD: SETS ACTIVE TAB
+MODULE z_dane_pass_active_tab_set OUTPUT.
+  z_dane_pass-activetab = g_z_dane_pass-pressed_tab.
+  CASE g_z_dane_pass-pressed_tab.
+    WHEN c_z_dane_pass-tab1.
+      g_z_dane_pass-subscreen = '0202'.
+    WHEN c_z_dane_pass-tab2.
+      g_z_dane_pass-subscreen = '0203'.
+    WHEN OTHERS.
+*&SPWIZARD:      DO NOTHING
+  ENDCASE.
+ENDMODULE.
+
+*&SPWIZARD: INPUT MODULE FOR TS 'Z_DANE_PASS'. DO NOT CHANGE THIS LINE!
+*&SPWIZARD: GETS ACTIVE TAB
+MODULE z_dane_pass_active_tab_get INPUT.
+  ok_code = sy-ucomm.
+  CASE ok_code.
+    WHEN c_z_dane_pass-tab1.
+      g_z_dane_pass-pressed_tab = c_z_dane_pass-tab1.
+    WHEN c_z_dane_pass-tab2.
+      g_z_dane_pass-pressed_tab = c_z_dane_pass-tab2.
+    WHEN OTHERS.
+*&SPWIZARD:      DO NOTHING
+  ENDCASE.
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*& Module STATUS_0110 OUTPUT
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+MODULE status_0110 OUTPUT.
+*  SET PF-STATUS 'xxxxx'.
+*  SET TITLEBAR 'xxxxxx'.
+
+
+  IF go_grid IS INITIAL.
+
+    " 1. Pobranie danych
+    SELECT * FROM zzz_reservations
+      INTO TABLE @gt_res
+      WHERE zid_pass = @g_pass_id.
+
+    " 2. Tworzenie kontenera
+    CREATE OBJECT go_container
+      EXPORTING
+        container_name = 'REZERV_ALV_AREA'.  " <-- tu dokładna nazwa Custom Control z SE80
+
+    " 3. Tworzenie ALV
+    CREATE OBJECT go_grid
+      EXPORTING
+        i_parent = go_container.
+
+    CREATE OBJECT go_event_handler.
+    SET HANDLER go_event_handler->handle_toolbar FOR go_grid.
+    SET HANDLER go_event_handler->handle_user_command FOR go_grid.
+
+    " 4. Tworzenie fieldcatalogu
+    CALL FUNCTION 'LVC_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name = 'ZZZ_RESERVATIONS'
+      CHANGING
+        ct_fieldcat      = lt_fcat.
+
+    " 5. Wyświetlenie ALV
+    go_grid->set_table_for_first_display(
+      EXPORTING
+        i_structure_name = 'ZZZ_RESERVATIONS'
+      CHANGING
+        it_outtab = gt_res
+        it_fieldcatalog = lt_fcat ).
+
+    DATA: ls_layout TYPE lvc_s_layo.
+    ls_layout-sel_mode = 'A'.
+
+    go_grid->set_table_for_first_display(
+      EXPORTING
+        i_structure_name = 'ZZZ_RESERVATIONS'
+        is_layout        = ls_layout
+      CHANGING
+        it_outtab        = gt_res
+        it_fieldcatalog  = lt_fcat ).
+
+
+  ENDIF.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  USER_COMMAND_0110  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*MODULE user_command_0110 INPUT.
+*
+*
+*ENDMODULE.
